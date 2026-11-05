@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from operator import itemgetter
 
 import pytz
-from dateutil.relativedelta import TU, relativedelta
+from dateutil.relativedelta import MO, relativedelta
 
 from odoo import models
 from odoo.osv import expression
@@ -69,19 +69,16 @@ class HrAttendance(models.Model):
                 # Handling the first attendance ever, don't add anything
                 break
 
-            latest_attended_day = self._get_utc_start_of_day(
+            # Localize in the employee timezone
+            latest_attendance = self._get_dt_as_employee(
                 emp, latest_attendance_before_batch.check_in
-            ).replace(tzinfo=None)
-
-            _logger.debug(f"{latest_attended_day}: Latest attendance before the batch")
-            # Bump to earliest monday minus one (so bump a week back from a monday)
-            monday_before_latest = (
-                latest_attended_day
-                + relativedelta(weekday=TU(-1))
-                + relativedelta(days=-1)
             )
-
-            _logger.debug(f"{monday_before_latest}: Earlier monday")
+            # Find the previous monday. Need to be localized again, in case it jumps
+            # over a summer-time saving change
+            monday_before_latest = self._get_localized_start_of_day(
+                emp, latest_attendance + relativedelta(weekday=MO(-1))
+            )
+            _logger.debug(f"Start of the previous monday: {monday_before_latest}")
 
             # Find all attendances between the monday and now.
             # There must be at least one
@@ -93,7 +90,7 @@ class HrAttendance(models.Model):
                         "<",
                         self._get_dt_in_naive(start_of_first_day_in_batch),
                     ),
-                    ("check_in", ">=", monday_before_latest),
+                    ("check_in", ">=", self._get_dt_in_naive(monday_before_latest)),
                 ]
             ):
                 previous_day_tuple = att._get_day_start_and_day(emp, att.check_in)
