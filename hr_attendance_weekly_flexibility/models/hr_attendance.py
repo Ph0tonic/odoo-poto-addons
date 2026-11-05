@@ -1,9 +1,9 @@
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from operator import itemgetter
+from zoneinfo import ZoneInfo
 
-import pytz
 from dateutil.relativedelta import MO, relativedelta
 
 from odoo import models
@@ -135,10 +135,10 @@ class HrAttendance(models.Model):
 
             # As _attendance_intervals_batch and _leave_intervals_batch both take
             # localized dates we need to localize those date
-            start = pytz.utc.localize(min(attendance_dates, key=itemgetter(0))[0])
-            stop = pytz.utc.localize(
+            start = min(attendance_dates, key=itemgetter(0))[0].astimezone(timezone.utc)
+            stop = (
                 max(attendance_dates, key=itemgetter(0))[0] + timedelta(hours=24)
-            )
+            ).astimezone(timezone.utc)
 
             # Retrieve expected attendance intervals
             calendar = emp.resource_calendar_id or emp.company_id.resource_calendar_id
@@ -334,15 +334,15 @@ class HrAttendance(models.Model):
         """
         Get the start of day from the employees' perspective, in their timezone
         """
-        return pytz.timezone(emp._get_tz()).localize(
-            datetime.combine(dt, datetime.min.time())
+        return datetime.combine(dt, datetime.min.time()).replace(
+            tzinfo=ZoneInfo(emp._get_tz())
         )
 
     def _get_dt_in_naive(self, dt):
         """
         Get the dt in UTC and naive
         """
-        return dt.astimezone(pytz.utc).replace(tzinfo=None)
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
     def _get_utc_start_of_day(self, emp, dt):
         """
@@ -354,4 +354,4 @@ class HrAttendance(models.Model):
         """
         Get the datetime from the employees' perspective
         """
-        return dt.astimezone(pytz.timezone(emp._get_tz()))
+        return dt.astimezone(ZoneInfo(emp._get_tz()))
