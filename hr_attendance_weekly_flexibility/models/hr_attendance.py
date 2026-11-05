@@ -190,9 +190,7 @@ class HrAttendance(models.Model):
 
                     # Find the last attendance before this day in the batch
                     earlier_days = [
-                        day
-                        for day in attendances_per_day.keys()
-                        if day < attendance_date
+                        day for day in attendances_per_day if day < attendance_date
                     ]
 
                     if earlier_days:
@@ -326,7 +324,7 @@ class HrAttendance(models.Model):
         expected_attendances = emp._employee_attendance_intervals(start, stop)
 
         # working_times = {date: [(start, stop)]}
-        working_times = defaultdict(lambda: [])
+        working_times = defaultdict(list)
         for expected_attendance in expected_attendances:
             # Exclude resource.calendar.attendance
             working_times[expected_attendance[0].date()].append(expected_attendance[:2])
