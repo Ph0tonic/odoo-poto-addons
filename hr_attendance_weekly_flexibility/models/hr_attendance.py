@@ -46,13 +46,12 @@ class HrAttendance(models.Model):
         days_to_add = set()
         for emp, attendance_dates in employee_attendance_dates.items():
             # Find the latest attendance before the first, bump to its earliest monday
-            first_in_batch = min(attendance_dates)[1]
 
-            # Get localized earliest attendance as datetime. Covers the case where the
-            # current attendance record is at employee's 00:00
-            earliest_datetime_in_batch = self._get_utc_start_of_day(
-                emp, first_in_batch
-            ).replace(tzinfo=None)
+            # Get the start of the day of the first attendance in batch, localized in
+            # the employee TZ.
+            start_of_first_day_in_batch = self._get_localized_start_of_day(
+                emp, min(attendance_dates)[1]
+            )
 
             latest_attendance_before_batch = self.env["hr.attendance"].search(
                 domain=[
@@ -60,7 +59,7 @@ class HrAttendance(models.Model):
                     (
                         "check_in",
                         "<",
-                        earliest_datetime_in_batch,
+                        self._get_dt_in_naive(start_of_first_day_in_batch),
                     ),
                 ],
                 order="check_in DESC",
@@ -89,7 +88,11 @@ class HrAttendance(models.Model):
             for att in self.env["hr.attendance"].search(
                 domain=[
                     ("employee_id", "=", emp.id),
-                    ("check_in", "<", earliest_datetime_in_batch),
+                    (
+                        "check_in",
+                        "<",
+                        self._get_dt_in_naive(start_of_first_day_in_batch),
+                    ),
                     ("check_in", ">=", monday_before_latest),
                 ]
             ):
