@@ -157,9 +157,11 @@ class HrAttendance(models.Model):
 
             assert bool(calendar and calendar.required_hours_are_weekly)
 
-            emp_contract_start = self._get_utc_start_of_day(
+            # Get the contract start datetime, localized in the employee TZ
+            emp_contract_start = self._get_localized_start_of_day(
                 emp, emp.contract_id.date_start
             )
+            _logger.debug(f"Contract start: {emp_contract_start}")
 
             # Loop through each day of attendances, and compute the day over/undertime.
             for day_data in sorted(attendance_dates, key=lambda x: x[1]):
@@ -177,7 +179,7 @@ class HrAttendance(models.Model):
                     hours_today = sum(attendances.mapped("worked_hours"))
                     today_working_times = working_times.get(attendance_date)
                     missed_working_hours = 0.0
-                    latest_missed_day = None
+                    latest_missed_date = None
 
                     try:
                         due_hours_today = (
@@ -194,36 +196,45 @@ class HrAttendance(models.Model):
                     ]
 
                     if earlier_days:
-                        latest_missed_day = max(earlier_days) + timedelta(days=1)
+                        # First day without work
+                        latest_missed_date = max(earlier_days) + timedelta(days=1)
                     elif (
                         self.env["hr.attendance"].search_count(
                             domain=[
                                 ("employee_id", "=", emp.id),
-                                ("check_in", "<", attendance_date),
-                                ("check_in", ">=", emp_contract_start),
+                                (
+                                    "check_in",
+                                    ">=",
+                                    self._get_dt_in_naive(emp_contract_start),
+                                ),
+                                (
+                                    "check_in",
+                                    "<",
+                                    self._get_utc_start_of_day(emp, attendance_date),
+                                ),
                             ]
                         )
                     ) == 0:
                         # There was no earlier attendance, the work should have
                         # happened since contract start.
-                        latest_missed_daytime = emp_contract_start
-                        latest_missed_day = latest_missed_daytime.date()
+                        latest_missed_datetime = emp_contract_start
 
                         _logger.debug(
                             "No earlier attendance, so check from contract start "
-                            f"{latest_missed_day}"
+                            f"{latest_missed_datetime}"
                         )
                         # Now refetch
                         working_times = self._get_working_times(
-                            emp, latest_missed_daytime, stop
+                            emp, latest_missed_datetime, stop
                         )
+                        latest_missed_date = latest_missed_datetime.date()
 
-                    if latest_missed_day:
+                    if latest_missed_date:
                         # Which working days were concerned
                         working_times_since = {
                             day: wt
                             for day, wt in working_times.items()
-                            if day < attendance_date and day >= latest_missed_day
+                            if day < attendance_date and day >= latest_missed_date
                         }
 
                         # That amount of work was not done
