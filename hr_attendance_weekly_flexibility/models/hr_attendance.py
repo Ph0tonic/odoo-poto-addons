@@ -1,10 +1,10 @@
 import logging
 from collections import defaultdict
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta, timezone
 from operator import itemgetter
+from zoneinfo import ZoneInfo
 
-import pytz
-from dateutil.relativedelta import TU, relativedelta
+from dateutil.relativedelta import MO, relativedelta
 
 from odoo import models
 from odoo.osv import expression
@@ -46,13 +46,12 @@ class HrAttendance(models.Model):
         days_to_add = set()
         for emp, attendance_dates in employee_attendance_dates.items():
             # Find the latest attendance before the first, bump to its earliest monday
-            first_in_batch = min(attendance_dates)[1]
 
-            # Get localized earliest attendance as datetime. Covers the case where the
-            # current attendance record is at employee's 00:00
-            earliest_datetime_in_batch = self._get_utc_start_of_day(
-                emp, first_in_batch
-            ).replace(tzinfo=None)
+            # Get the start of the day of the first attendance in batch, localized in
+            # the employee TZ.
+            start_of_first_day_in_batch = self._get_localized_start_of_day(
+                emp, min(attendance_dates)[1]
+            )
 
             latest_attendance_before_batch = self.env["hr.attendance"].search(
                 domain=[
@@ -60,7 +59,7 @@ class HrAttendance(models.Model):
                     (
                         "check_in",
                         "<",
-                        earliest_datetime_in_batch,
+                        self._get_dt_in_naive(start_of_first_day_in_batch),
                     ),
                 ],
                 order="check_in DESC",
@@ -70,27 +69,28 @@ class HrAttendance(models.Model):
                 # Handling the first attendance ever, don't add anything
                 break
 
-            latest_attended_day = self._get_utc_start_of_day(
+            # Localize in the employee timezone
+            latest_attendance = self._get_dt_as_employee(
                 emp, latest_attendance_before_batch.check_in
-            ).replace(tzinfo=None)
-
-            _logger.debug(f"{latest_attended_day}: Latest attendance before the batch")
-            # Bump to earliest monday minus one (so bump a week back from a monday)
-            monday_before_latest = (
-                latest_attended_day
-                + relativedelta(weekday=TU(-1))
-                + relativedelta(days=-1)
             )
-
-            _logger.debug(f"{monday_before_latest}: Earlier monday")
+            # Find the previous monday. Need to be localized again, in case it jumps
+            # over a summer-time saving change
+            monday_before_latest = self._get_localized_start_of_day(
+                emp, latest_attendance + relativedelta(weekday=MO(-1))
+            )
+            _logger.debug(f"Start of the previous monday: {monday_before_latest}")
 
             # Find all attendances between the monday and now.
             # There must be at least one
             for att in self.env["hr.attendance"].search(
                 domain=[
                     ("employee_id", "=", emp.id),
-                    ("check_in", "<", earliest_datetime_in_batch),
-                    ("check_in", ">=", monday_before_latest),
+                    (
+                        "check_in",
+                        "<",
+                        self._get_dt_in_naive(start_of_first_day_in_batch),
+                    ),
+                    ("check_in", ">=", self._get_dt_in_naive(monday_before_latest)),
                 ]
             ):
                 previous_day_tuple = att._get_day_start_and_day(emp, att.check_in)
@@ -135,10 +135,10 @@ class HrAttendance(models.Model):
 
             # As _attendance_intervals_batch and _leave_intervals_batch both take
             # localized dates we need to localize those date
-            start = pytz.utc.localize(min(attendance_dates, key=itemgetter(0))[0])
-            stop = pytz.utc.localize(
+            start = min(attendance_dates, key=itemgetter(0))[0].astimezone(timezone.utc)
+            stop = (
                 max(attendance_dates, key=itemgetter(0))[0] + timedelta(hours=24)
-            )
+            ).astimezone(timezone.utc)
 
             # Retrieve expected attendance intervals
             calendar = emp.resource_calendar_id or emp.company_id.resource_calendar_id
@@ -157,9 +157,11 @@ class HrAttendance(models.Model):
 
             assert bool(calendar and calendar.required_hours_are_weekly)
 
-            emp_contract_start = self._get_utc_start_of_day(
+            # Get the contract start datetime, localized in the employee TZ
+            emp_contract_start = self._get_localized_start_of_day(
                 emp, emp.contract_id.date_start
             )
+            _logger.debug(f"Contract start: {emp_contract_start}")
 
             # Loop through each day of attendances, and compute the day over/undertime.
             for day_data in sorted(attendance_dates, key=lambda x: x[1]):
@@ -177,7 +179,7 @@ class HrAttendance(models.Model):
                     hours_today = sum(attendances.mapped("worked_hours"))
                     today_working_times = working_times.get(attendance_date)
                     missed_working_hours = 0.0
-                    latest_missed_day = None
+                    latest_missed_date = None
 
                     try:
                         due_hours_today = (
@@ -188,42 +190,49 @@ class HrAttendance(models.Model):
 
                     # Find the last attendance before this day in the batch
                     earlier_days = [
-                        day
-                        for day in attendances_per_day.keys()
-                        if day < attendance_date
+                        day for day in attendances_per_day if day < attendance_date
                     ]
 
                     if earlier_days:
-                        latest_missed_day = max(earlier_days) + timedelta(days=1)
+                        # First day without work
+                        latest_missed_date = max(earlier_days) + timedelta(days=1)
                     elif (
                         self.env["hr.attendance"].search_count(
                             domain=[
                                 ("employee_id", "=", emp.id),
-                                ("check_in", "<", attendance_date),
-                                ("check_in", ">=", emp_contract_start),
+                                (
+                                    "check_in",
+                                    ">=",
+                                    self._get_dt_in_naive(emp_contract_start),
+                                ),
+                                (
+                                    "check_in",
+                                    "<",
+                                    self._get_utc_start_of_day(emp, attendance_date),
+                                ),
                             ]
                         )
                     ) == 0:
                         # There was no earlier attendance, the work should have
                         # happened since contract start.
-                        latest_missed_daytime = emp_contract_start
-                        latest_missed_day = latest_missed_daytime.date()
+                        latest_missed_datetime = emp_contract_start
 
                         _logger.debug(
                             "No earlier attendance, so check from contract start "
-                            f"{latest_missed_day}"
+                            f"{latest_missed_datetime}"
                         )
                         # Now refetch
                         working_times = self._get_working_times(
-                            emp, latest_missed_daytime, stop
+                            emp, latest_missed_datetime, stop
                         )
+                        latest_missed_date = latest_missed_datetime.date()
 
-                    if latest_missed_day:
+                    if latest_missed_date:
                         # Which working days were concerned
                         working_times_since = {
                             day: wt
                             for day, wt in working_times.items()
-                            if day < attendance_date and day >= latest_missed_day
+                            if day < attendance_date and day >= latest_missed_date
                         }
 
                         # That amount of work was not done
@@ -315,16 +324,34 @@ class HrAttendance(models.Model):
         expected_attendances = emp._employee_attendance_intervals(start, stop)
 
         # working_times = {date: [(start, stop)]}
-        working_times = defaultdict(lambda: [])
+        working_times = defaultdict(list)
         for expected_attendance in expected_attendances:
             # Exclude resource.calendar.attendance
             working_times[expected_attendance[0].date()].append(expected_attendance[:2])
         return working_times
 
+    def _get_localized_start_of_day(self, emp, dt):
+        """
+        Get the start of day from the employees' perspective, in their timezone
+        """
+        return datetime.combine(dt, datetime.min.time()).replace(
+            tzinfo=ZoneInfo(emp._get_tz())
+        )
+
+    def _get_dt_in_naive(self, dt):
+        """
+        Get the dt in UTC and naive
+        """
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
     def _get_utc_start_of_day(self, emp, dt):
         """
         Get the start of day from the employees' perspective
         """
-        return (
-            pytz.timezone(emp._get_tz()).localize(datetime.combine(dt, time(0, 0)))
-        ).astimezone(pytz.utc)
+        return self._get_dt_in_naive(self._get_localized_start_of_day(emp, dt))
+
+    def _get_dt_as_employee(self, emp, dt):
+        """
+        Get the datetime from the employees' perspective
+        """
+        return dt.astimezone(ZoneInfo(emp._get_tz()))
