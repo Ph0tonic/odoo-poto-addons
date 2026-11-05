@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from operator import itemgetter
 
 import pytz
@@ -321,10 +321,28 @@ class HrAttendance(models.Model):
             working_times[expected_attendance[0].date()].append(expected_attendance[:2])
         return working_times
 
+    def _get_localized_start_of_day(self, emp, dt):
+        """
+        Get the start of day from the employees' perspective, in their timezone
+        """
+        return pytz.timezone(emp._get_tz()).localize(
+            datetime.combine(dt, datetime.min.time())
+        )
+
+    def _get_dt_in_naive(self, dt):
+        """
+        Get the dt in UTC and naive
+        """
+        return dt.astimezone(pytz.utc).replace(tzinfo=None)
+
     def _get_utc_start_of_day(self, emp, dt):
         """
         Get the start of day from the employees' perspective
         """
-        return (
-            pytz.timezone(emp._get_tz()).localize(datetime.combine(dt, time(0, 0)))
-        ).astimezone(pytz.utc)
+        return self._get_dt_in_naive(self._get_localized_start_of_day(emp, dt))
+
+    def _get_dt_as_employee(self, emp, dt):
+        """
+        Get the datetime from the employees' perspective
+        """
+        return dt.astimezone(pytz.timezone(emp._get_tz()))
