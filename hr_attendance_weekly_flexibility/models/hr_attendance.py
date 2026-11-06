@@ -141,7 +141,6 @@ class HrAttendance(models.Model):
             ).astimezone(timezone.utc)
 
             # Retrieve expected attendance intervals
-            calendar = emp.resource_calendar_id or emp.company_id.resource_calendar_id
             working_times = self._get_working_times(emp, start, stop)
 
             overtimes = (
@@ -155,13 +154,10 @@ class HrAttendance(models.Model):
                 )
             )
 
-            assert bool(calendar and calendar.required_hours_are_weekly)
-
-            # Get the contract start datetime, localized in the employee TZ
-            emp_contract_start = self._get_localized_start_of_day(
-                emp, emp.contract_id.date_start
+            # Get all contracts covering the time span
+            emp_contracts = emp._get_contracts(
+                date_from=start, date_to=stop, states=["open", "close", "cancel"]
             )
-            _logger.debug(f"Contract start: {emp_contract_start}")
 
             # Loop through each day of attendances, and compute the day over/undertime.
             for day_data in sorted(attendance_dates, key=lambda x: x[1]):
@@ -174,6 +170,17 @@ class HrAttendance(models.Model):
                 # Overtime is not counted if any shift is not closed or if there are
                 # no attendances for that day, this could happen when deleting
                 # attendances.
+
+                # Get contract start _for that date_
+                emp_contract_start = self._get_localized_start_of_day(
+                    emp,
+                    next(
+                        c
+                        for c in emp_contracts
+                        if attendance_date >= c.date_start
+                        and (not c.date_end or attendance_date < c.date_end)
+                    ).date_start,
+                )
 
                 if not unfinished_shifts and attendances:
                     hours_today = sum(attendances.mapped("worked_hours"))
