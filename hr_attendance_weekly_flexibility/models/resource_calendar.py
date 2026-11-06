@@ -22,6 +22,7 @@ class ResourceCalendar(models.Model):
         "attendance_ids.hour_to",
         "two_weeks_calendar",
         "flexible_hours",
+        "required_hours_are_weekly",
     )
     def _compute_hours_per_day(self):
         for calendar in self:
