@@ -67,7 +67,7 @@ class HrAttendance(models.Model):
             )
             if not latest_attendance_before_batch:
                 # Handling the first attendance ever, don't add anything
-                break
+                continue
 
             # Localize in the employee timezone
             latest_attendance = self._get_dt_as_employee(
